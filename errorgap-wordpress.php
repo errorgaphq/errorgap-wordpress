@@ -2,13 +2,13 @@
 
 /**
  * Plugin Name: Errorgap
- * Plugin URI: https://github.com/jgrubbs/errorgap-wordpress
+ * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, and shutdown fatals to Errorgap.
  * Version: 0.1.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
- * Author URI: https://github.com/jgrubbs/errorgap
+ * Author URI: https://errorgap.com
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: errorgap
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.2.0');
+define('ERRORGAP_WP_VERSION', '0.1.0');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 
 final class Errorgap_WordPress
