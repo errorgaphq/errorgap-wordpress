@@ -1,0 +1,9 @@
+.git
+.github
+/.wordpress-org
+.gitignore
+.distignore
+README.md
+vendor
+node_modules
+*.zip
