@@ -25,6 +25,10 @@ define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 
 final class Errorgap_WordPress
 {
+  private const SOURCE_RADIUS = 6;
+  private const MAX_SOURCE_FRAMES = 50;
+  private const MAX_SOURCE_LINE_CHARS = 400;
+
   private static ?Errorgap_WordPress $instance = null;
 
   /** @var callable|null */
@@ -35,6 +39,9 @@ final class Errorgap_WordPress
 
   /** @var array<string, bool> */
   private array $reported_errors = [];
+
+  /** @var array<string, array<string>|null> */
+  private array $source_file_cache = [];
 
   /** @var float|null */
   private ?float $request_start = null;
@@ -77,6 +84,8 @@ final class Errorgap_WordPress
       return;
     }
 
+    // Required to capture PHP errors for the plugin's error-monitoring purpose.
+    // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_set_error_handler
     $this->previous_error_handler = set_error_handler([$this, 'handle_error']);
     $this->previous_exception_handler = set_exception_handler([$this, 'handle_exception']);
     register_shutdown_function([$this, 'handle_shutdown']);
@@ -276,12 +285,16 @@ final class Errorgap_WordPress
 
   public function handle_error(int $severity, string $message, string $file = '', int $line = 0): bool
   {
+    // Respect the site's configured PHP error-reporting mask.
+    // phpcs:ignore WordPress.PHP.DevelopmentFunctions.prevent_path_disclosure_error_reporting
     if ((error_reporting() & $severity) !== 0) {
       $this->notify($this->error_payload([
         'type' => $this->php_error_type($severity),
         'message' => $message,
         'file' => $file,
         'line' => $line,
+        // Required to report the stack that led to the captured PHP error.
+        // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_debug_backtrace
         'trace' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS),
       ]));
     }
@@ -572,7 +585,71 @@ final class Errorgap_WordPress
       ];
     }
 
+    // App code (content dir: themes, plugins, mu-plugins) first, then vendor
+    // frames (WordPress core, libraries), so deep traces spend the budget on
+    // app frames before core ones.
+    $source_frames = 0;
+    foreach ([true, false] as $app_pass) {
+      foreach ($frames as $index => $frame) {
+        if ($source_frames >= self::MAX_SOURCE_FRAMES) {
+          break 2;
+        }
+
+        if ($this->is_app_file($frame['file']) !== $app_pass) {
+          continue;
+        }
+
+        $source = $this->source_excerpt($frame['file'], $frame['line']);
+        if ($source !== null) {
+          $frames[$index]['source'] = $source;
+          $source_frames++;
+        }
+      }
+    }
+
     return $frames;
+  }
+
+  private function is_app_file(string $file): bool
+  {
+    return defined('WP_CONTENT_DIR') && strpos($file, WP_CONTENT_DIR) === 0;
+  }
+
+  /**
+   * Reads the lines around the failing line so the server can render source
+   * without repository access. Returns null when the file cannot be read
+   * (stream/phar paths, eval'd-code frames, unreadable files).
+   *
+   * @return array{start_line: int, lines: array<string>}|null
+   */
+  private function source_excerpt(string $file, ?int $line): ?array
+  {
+    if ($line === null || $line < 1 || $file === '' || strpos($file, '://') !== false) {
+      return null;
+    }
+
+    if (!array_key_exists($file, $this->source_file_cache)) {
+      $lines = (is_file($file) && is_readable($file)) ? @file($file, FILE_IGNORE_NEW_LINES) : null;
+      $this->source_file_cache[$file] = is_array($lines) && $lines !== [] ? $lines : null;
+    }
+
+    $lines = $this->source_file_cache[$file];
+    if ($lines === null || $line > count($lines)) {
+      return null;
+    }
+
+    $start = max($line - self::SOURCE_RADIUS, 1);
+    $end = min($line + self::SOURCE_RADIUS, count($lines));
+
+    $excerpt = [];
+    for ($number = $start; $number <= $end; $number++) {
+      $excerpt[] = substr(rtrim($lines[$number - 1], "\r"), 0, self::MAX_SOURCE_LINE_CHARS);
+    }
+
+    return [
+      'start_line' => $start,
+      'lines' => $excerpt,
+    ];
   }
 
   private function frame_function(array $frame): ?string
@@ -655,7 +732,7 @@ final class Errorgap_WordPress
       return false;
     }
 
-    return mt_rand() / mt_getrandmax() <= $sample_rate;
+    return wp_rand(0, 1000000) / 1000000 <= $sample_rate;
   }
 
   private function environment_name(): string
