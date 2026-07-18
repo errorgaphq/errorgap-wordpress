@@ -167,9 +167,23 @@ final class Errorgap_WordPress
     if (!current_user_can('manage_options')) {
       return;
     }
+    $overridden = array_keys(self::constant_overrides());
 ?>
     <div class="wrap">
       <h1><?php echo esc_html__('Errorgap', 'errorgap'); ?></h1>
+      <?php if (!empty($overridden)) : ?>
+        <div class="notice notice-info">
+          <p>
+            <?php
+            printf(
+              /* translators: %s: comma-separated list of setting names */
+              esc_html__('Defined as constants in wp-config.php and overriding the saved values below: %s.', 'errorgap'),
+              esc_html(implode(', ', $overridden))
+            );
+            ?>
+          </p>
+        </div>
+      <?php endif; ?>
       <form action="options.php" method="post">
         <?php
         settings_fields('errorgap');
@@ -690,7 +704,46 @@ final class Errorgap_WordPress
   {
     $settings = get_option(ERRORGAP_WP_OPTION, []);
 
-    return array_merge(self::default_settings(), is_array($settings) ? $settings : []);
+    return array_merge(
+      self::default_settings(),
+      is_array($settings) ? $settings : [],
+      self::constant_overrides()
+    );
+  }
+
+  /**
+   * Constants defined in wp-config.php take precedence over saved settings,
+   * so hosts can configure the plugin without storing the key in the
+   * database. Reporting is implied on when both ERRORGAP_ENDPOINT and
+   * ERRORGAP_PROJECT_SLUG come from constants, unless ERRORGAP_ENABLED says
+   * otherwise. Empty or non-string values (e.g. a getenv() miss returning
+   * false) are ignored.
+   *
+   * @return array<string, mixed>
+   */
+  public static function constant_overrides(): array
+  {
+    $map = [
+      'endpoint' => 'ERRORGAP_ENDPOINT',
+      'project_slug' => 'ERRORGAP_PROJECT_SLUG',
+      'project_key' => 'ERRORGAP_API_KEY',
+      'environment' => 'ERRORGAP_ENVIRONMENT',
+    ];
+
+    $overrides = [];
+    foreach ($map as $setting => $constant) {
+      if (defined($constant) && is_string(constant($constant)) && constant($constant) !== '') {
+        $overrides[$setting] = constant($constant);
+      }
+    }
+
+    if (defined('ERRORGAP_ENABLED')) {
+      $overrides['enabled'] = (bool) constant('ERRORGAP_ENABLED');
+    } elseif (isset($overrides['endpoint'], $overrides['project_slug'])) {
+      $overrides['enabled'] = true;
+    }
+
+    return $overrides;
   }
 }
 
