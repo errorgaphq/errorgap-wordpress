@@ -36,6 +36,8 @@ Constants take precedence over values saved on the settings screen, and keep the
 - Project key: optional; sent as `X-Errorgap-Project-Key` when present
 - Environment: optional override, otherwise WordPress environment type
 - Sample rate: `1.0` reports every captured notice
+- APM: optionally records request timings and sends performance transactions
+- APM DB queries: optionally includes normalized SQL spans and their durations
 
 Notices are posted to:
 
@@ -57,7 +59,11 @@ The plugin sends Errorgap's compact Airbrake-like notice envelope:
         {
           "file": "/var/www/html/wp-content/plugins/example/example.php",
           "line": 42,
-          "function": "example_callback"
+          "function": "example_callback",
+          "source": {
+            "start_line": 36,
+            "lines": ["...the 6 lines around the failing line..."]
+          }
         }
       ]
     }
@@ -76,6 +82,29 @@ The plugin sends Errorgap's compact Airbrake-like notice envelope:
   "params": {}
 }
 ```
+
+## External service and data disclosure
+
+Reporting is disabled by default. Once a site administrator configures an
+Errorgap endpoint and enables reporting, the plugin sends error reports to
+that endpoint. Reports may include error messages, request URLs, HTTP methods
+and hostnames, backtrace file paths and function names, source-code excerpts,
+WordPress and PHP versions, site URLs, sanitized GET and POST parameters, and
+the ID, login, email address, and roles of a logged-in WordPress user.
+
+Fields whose names indicate passwords, authorization values, tokens, secrets,
+keys, nonces, or cookies are replaced with `[FILTERED]`. Other request values
+may still contain personal or sensitive information.
+
+When APM is enabled, the plugin also sends request paths, response status
+codes, durations, environment names, and timestamps. Enabling database query
+spans adds normalized SQL statements and durations; string and numeric SQL
+literals are replaced with placeholders before transmission.
+
+For the hosted Errorgap service, see the [Privacy Policy](https://errorgap.com/privacy)
+and [Terms of Service](https://errorgap.com/terms). Administrators using a
+self-hosted or third-party endpoint are responsible for that endpoint's data
+handling and disclosures.
 
 ## License
 
