@@ -4,6 +4,7 @@
 .gitignore
 .distignore
 README.md
+tests
 vendor
 node_modules
 *.zip

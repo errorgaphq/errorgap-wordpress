@@ -4,7 +4,7 @@
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, and shutdown fatals to Errorgap.
- * Version: 0.1.0
+ * Version: 0.2.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.1.0');
+define('ERRORGAP_WP_VERSION', '0.2.0');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 
 final class Errorgap_WordPress
@@ -28,6 +28,13 @@ final class Errorgap_WordPress
   private const SOURCE_RADIUS = 6;
   private const MAX_SOURCE_FRAMES = 50;
   private const MAX_SOURCE_LINE_CHARS = 400;
+  private const MAX_CAUSE_DEPTH = 10;
+
+  // Which PHP error severities this plugin reports, independent of the site's
+  // global error-reporting level. Errors and warnings are reported; notices,
+  // deprecations, and strict notices are not, to keep reports actionable.
+  // Filter `errorgap_reported_severities` to customize.
+  private const DEFAULT_REPORTED_SEVERITIES = E_ALL & ~E_NOTICE & ~E_USER_NOTICE & ~E_DEPRECATED & ~E_USER_DEPRECATED;
 
   private static ?Errorgap_WordPress $instance = null;
 
@@ -45,6 +52,9 @@ final class Errorgap_WordPress
 
   /** @var float|null */
   private ?float $request_start = null;
+
+  /** Set once the exception handler has reported an uncaught Throwable. */
+  private bool $handled_uncaught = false;
 
   public static function instance(): Errorgap_WordPress
   {
@@ -285,9 +295,11 @@ final class Errorgap_WordPress
 
   public function handle_error(int $severity, string $message, string $file = '', int $line = 0): bool
   {
-    // Respect the site's configured PHP error-reporting mask.
-    // phpcs:ignore WordPress.PHP.DevelopmentFunctions.prevent_path_disclosure_error_reporting
-    if ((error_reporting() & $severity) !== 0) {
+    // Report only the severities in the plugin's own mask. This is deliberately
+    // decoupled from the site's global error-reporting level so enabling the
+    // plugin never changes, and is never changed by, how the rest of the site
+    // reports or displays PHP errors.
+    if (($this->reported_severities() & $severity) !== 0) {
       $this->notify($this->error_payload([
         'type' => $this->php_error_type($severity),
         'message' => $message,
@@ -308,13 +320,11 @@ final class Errorgap_WordPress
 
   public function handle_exception(Throwable $exception): void
   {
-    $this->notify($this->error_payload([
-      'type' => get_class($exception),
-      'message' => $exception->getMessage(),
-      'file' => $exception->getFile(),
-      'line' => $exception->getLine(),
-      'trace' => $exception->getTrace(),
-    ]));
+    $this->notify($this->throwable_payload($exception));
+    // Rethrowing below turns this into an "Uncaught ..." fatal whose message is
+    // the root cause; without this flag handle_shutdown would report it a
+    // second time as a standalone error.
+    $this->handled_uncaught = true;
 
     if (is_callable($this->previous_exception_handler)) {
       call_user_func($this->previous_exception_handler, $exception);
@@ -324,10 +334,54 @@ final class Errorgap_WordPress
     throw $exception;
   }
 
+  /**
+   * Builds a notice payload from a Throwable, walking its getPrevious() chain
+   * so nested exceptions are reported as context.causes and their frames are
+   * merged into a single backtrace (cycle-guarded, bounded depth).
+   */
+  private function throwable_payload(Throwable $exception): array
+  {
+    $chain = [];
+    $seen = [];
+    $current = $exception;
+    while ($current instanceof Throwable
+      && !in_array(spl_object_id($current), $seen, true)
+      && count($chain) < self::MAX_CAUSE_DEPTH) {
+      $seen[] = spl_object_id($current);
+      $chain[] = $current;
+      $current = $current->getPrevious();
+    }
+
+    $root = $chain[0];
+    $causes = [];
+    $cause_traces = [];
+    foreach (array_slice($chain, 1) as $cause) {
+      $causes[] = ['type' => get_class($cause), 'message' => $cause->getMessage()];
+      $cause_traces[] = [
+        'file' => $cause->getFile(),
+        'line' => $cause->getLine(),
+        'trace' => $cause->getTrace(),
+      ];
+    }
+
+    return $this->error_payload([
+      'type' => get_class($root),
+      'message' => $root->getMessage(),
+      'file' => $root->getFile(),
+      'line' => $root->getLine(),
+      'trace' => $root->getTrace(),
+      'causes' => $causes,
+      'cause_traces' => $cause_traces,
+    ]);
+  }
+
   public function handle_shutdown(): void
   {
     $error = error_get_last();
-    if (is_array($error) && $this->is_fatal_type((int) ($error['type'] ?? 0))) {
+    // Skip when the exception handler already reported this crash: rethrowing an
+    // uncaught Throwable surfaces here as a fatal whose message is the root
+    // cause, which we already captured under the exception's context.causes.
+    if (!$this->handled_uncaught && is_array($error) && $this->is_fatal_type((int) ($error['type'] ?? 0))) {
       $this->notify($this->fatal_error_payload([
         'type' => $this->php_error_type((int) $error['type']),
         'message' => (string) ($error['message'] ?? ''),
@@ -440,6 +494,16 @@ final class Errorgap_WordPress
     return preg_replace('/\s+/', ' ', trim($sql)) ?? trim($sql);
   }
 
+  /**
+   * The bitmask of PHP error severities this plugin reports. Filterable so a
+   * site can widen or narrow it (e.g. add E_DEPRECATED) without touching the
+   * global error-reporting level.
+   */
+  private function reported_severities(): int
+  {
+    return (int) apply_filters('errorgap_reported_severities', self::DEFAULT_REPORTED_SEVERITIES);
+  }
+
   private function apm_enabled(): bool
   {
     return !empty(self::settings()['apm_enabled']);
@@ -490,6 +554,8 @@ final class Errorgap_WordPress
       'file' => (string) $error['file'],
       'line' => (int) $error['line'],
       'trace' => (array) ($error['trace'] ?? []),
+      'causes' => (array) ($error['causes'] ?? []),
+      'cause_traces' => (array) ($error['cause_traces'] ?? []),
     ];
   }
 
@@ -531,7 +597,28 @@ final class Errorgap_WordPress
     $request_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '';
     $method = isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : '';
     $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : '';
-    $url = $request_uri === '' ? home_url('/') : home_url($request_uri);
+    // Drop the query string from the reported URL: it can carry secrets, and the
+    // (redacted) query parameters are reported separately under params.query.
+    $request_path = strtok($request_uri, '?');
+    $request_path = $request_path === false ? '' : $request_path;
+    $url = $request_path === '' ? home_url('/') : home_url($request_path);
+
+    $context = [
+      'environment' => $this->environment_name(),
+      'url' => $url,
+      'component' => 'WordPress',
+      'action' => $method,
+      'hostname' => $host,
+      'notifier' => [
+        'name' => 'errorgap-wordpress',
+        'version' => ERRORGAP_WP_VERSION,
+      ],
+    ];
+
+    $causes = (array) ($error['causes'] ?? []);
+    if (!empty($causes)) {
+      $context['causes'] = $causes;
+    }
 
     return [
       'errors' => [[
@@ -539,17 +626,7 @@ final class Errorgap_WordPress
         'message' => (string) $error['message'],
         'backtrace' => $this->backtrace($error),
       ]],
-      'context' => [
-        'environment' => $this->environment_name(),
-        'url' => $url,
-        'component' => 'WordPress',
-        'action' => $method,
-        'hostname' => $host,
-        'notifier' => [
-          'name' => 'errorgap-wordpress',
-          'version' => ERRORGAP_WP_VERSION,
-        ],
-      ],
+      'context' => $context,
       'environment' => [
         'PHP_VERSION' => PHP_VERSION,
         'WORDPRESS_VERSION' => get_bloginfo('version'),
@@ -567,22 +644,20 @@ final class Errorgap_WordPress
 
   private function backtrace(array $error): array
   {
-    $frames = [[
-      'file' => (string) $error['file'],
-      'line' => (int) $error['line'],
-      'function' => null,
-    ]];
+    $frames = $this->frames_for(
+      (string) $error['file'],
+      (int) $error['line'],
+      (array) ($error['trace'] ?? [])
+    );
 
-    foreach ((array) ($error['trace'] ?? []) as $frame) {
-      if (empty($frame['file'])) {
-        continue;
-      }
-
-      $frames[] = [
-        'file' => (string) $frame['file'],
-        'line' => isset($frame['line']) ? (int) $frame['line'] : null,
-        'function' => $this->frame_function($frame),
-      ];
+    // Merge each nested cause's frames so the dashboard renders the whole
+    // exception chain as a single backtrace.
+    foreach ((array) ($error['cause_traces'] ?? []) as $cause) {
+      $frames = array_merge($frames, $this->frames_for(
+        (string) ($cause['file'] ?? ''),
+        (int) ($cause['line'] ?? 0),
+        (array) ($cause['trace'] ?? [])
+      ));
     }
 
     // App code (content dir: themes, plugins, mu-plugins) first, then vendor
@@ -605,6 +680,36 @@ final class Errorgap_WordPress
           $source_frames++;
         }
       }
+    }
+
+    return $frames;
+  }
+
+  /**
+   * Builds ordered frames for one error/exception: the failing file:line first,
+   * then each usable trace frame. Source excerpts are added later in a single
+   * budget pass across the whole (possibly merged) backtrace.
+   */
+  private function frames_for(string $file, ?int $line, array $trace): array
+  {
+    $frames = [[
+      'file' => $file,
+      'line' => (int) $line,
+      'function' => null,
+      'in_app' => $this->is_app_file($file),
+    ]];
+
+    foreach ($trace as $frame) {
+      if (empty($frame['file'])) {
+        continue;
+      }
+
+      $frames[] = [
+        'file' => (string) $frame['file'],
+        'line' => isset($frame['line']) ? (int) $frame['line'] : null,
+        'function' => $this->frame_function($frame),
+        'in_app' => $this->is_app_file((string) $frame['file']),
+      ];
     }
 
     return $frames;
@@ -818,6 +923,16 @@ final class Errorgap_WordPress
       $overrides['enabled'] = (bool) constant('ERRORGAP_ENABLED');
     } elseif (isset($overrides['endpoint'], $overrides['project_slug'])) {
       $overrides['enabled'] = true;
+    }
+
+    $flags = [
+      'apm_enabled' => 'ERRORGAP_APM_ENABLED',
+      'apm_db_queries' => 'ERRORGAP_APM_DB_QUERIES',
+    ];
+    foreach ($flags as $setting => $constant) {
+      if (defined($constant)) {
+        $overrides[$setting] = (bool) constant($constant);
+      }
     }
 
     return $overrides;

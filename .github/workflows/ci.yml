@@ -4,11 +4,17 @@ on:
     branches: [main]
   pull_request:
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php-version: ["7.4", "8.3"]
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "7.4"
-      - run: find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+          php-version: ${{ matrix.php-version }}
+      - name: Lint
+        run: find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+      - name: Regression tests
+        run: php tests/plugin_test.php

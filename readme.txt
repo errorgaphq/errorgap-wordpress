@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -46,7 +46,12 @@ Sample rate:
 Use `1.0` to report every captured error. Lower values sample captured notices before sending.
 
 APM:
-Optionally record request timings and send APM transactions. Database query spans can also be included; SQL string and numeric literals are replaced with placeholders before transmission.
+Optionally record request timings and send APM transactions. Database query spans can also be included; SQL string and numeric literals are replaced with placeholders before transmission. APM can also be enabled from `wp-config.php` with `define('ERRORGAP_APM_ENABLED', true);` and `define('ERRORGAP_APM_DB_QUERIES', true);`.
+
+Reported severities:
+The plugin reports its own set of PHP error severities (errors and warnings) independently of the site's global error-reporting level, so activating it never changes how the rest of your site reports or displays PHP errors. Notices, deprecations, and strict notices are not reported by default. Adjust the set with the `errorgap_reported_severities` filter:
+
+`add_filter('errorgap_reported_severities', fn() => E_ALL & ~E_DEPRECATED);`
 
 Constants:
 Every connection setting can also be defined in `wp-config.php`, above the `/* That's all, stop editing! */` line. Constants take precedence over values saved on the settings screen, and keep the project key out of the database:
@@ -92,6 +97,13 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.2.0 =
+* Report a plugin-defined set of PHP error severities (errors and warnings) instead of reading the site's global error-reporting level, so activating the plugin never changes how the rest of the site reports or displays errors. Adjustable with the `errorgap_reported_severities` filter.
+* Report nested exception causes: the `getPrevious()` chain is captured as `context.causes` and each cause's frames are merged into a single backtrace.
+* Mark backtrace frames as in-app (theme/plugin/mu-plugin code) or vendor (WordPress core) so the dashboard can separate application frames from core.
+* Avoid reporting an uncaught exception twice (once from the exception handler, once from the shutdown handler).
+* Allow enabling APM and DB query spans from `wp-config.php` via `ERRORGAP_APM_ENABLED` and `ERRORGAP_APM_DB_QUERIES`.
 
 = 0.1.0 =
 * Initial errorgap WordPress notifier.
