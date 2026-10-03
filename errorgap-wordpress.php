@@ -4,7 +4,7 @@
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, and shutdown fatals to Errorgap.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.2.0');
+define('ERRORGAP_WP_VERSION', '0.3.0');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 
 final class Errorgap_WordPress
@@ -52,6 +52,13 @@ final class Errorgap_WordPress
 
   /** @var float|null */
   private ?float $request_start = null;
+
+  /**
+   * The id of this request's APM transaction. Errors reported during the
+   * request carry it as context.transaction_id, so Errorgap shows the error a
+   * request raised on its trace. Random; it identifies nothing about a visitor.
+   */
+  private ?string $transaction_id = null;
 
   /** Set once the exception handler has reported an uncaught Throwable. */
   private bool $handled_uncaught = false;
@@ -102,6 +109,7 @@ final class Errorgap_WordPress
 
     if ($this->apm_enabled()) {
       $this->request_start = microtime(true);
+      $this->transaction_id = wp_generate_uuid4();
       add_action('init', [$this, 'apm_maybe_enable_savequeries'], 1);
     }
   }
@@ -407,6 +415,7 @@ final class Errorgap_WordPress
     $path_raw = strtok($path_raw, '?') ?: '/'; // strip query string
 
     $payload = [
+      'id' => $this->transaction_id,
       'kind' => 'web',
       'method' => $method,
       'path' => $this->wp_route_pattern(),
@@ -618,6 +627,10 @@ final class Errorgap_WordPress
     $causes = (array) ($error['causes'] ?? []);
     if (!empty($causes)) {
       $context['causes'] = $causes;
+    }
+
+    if ($this->transaction_id !== null) {
+      $context['transaction_id'] = $this->transaction_id;
     }
 
     return [
