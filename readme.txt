@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 0.2.0
+Stable tag: 0.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -70,7 +70,7 @@ This plugin connects to the Errorgap endpoint configured by the site administrat
 
 Error reports may include error types and messages, request URLs, HTTP methods and hostnames, backtrace file paths and function names, source-code excerpts surrounding failing lines, WordPress and PHP versions, environment and site URLs, sanitized GET and POST parameters, and the ID, login, email address, and roles of a logged-in WordPress user. Fields whose names indicate passwords, authorization values, tokens, secrets, keys, nonces, or cookies are replaced with `[FILTERED]`; other request values may still contain personal or sensitive information.
 
-When APM is enabled, transactions may include request paths, response status codes, durations, environment names, and timestamps. If database query spans are also enabled, normalized SQL statements and their durations are sent. String and numeric SQL literals are replaced with placeholders before transmission.
+When APM is enabled, transactions may include a random per-request identifier (also attached to errors from that request), request paths, response status codes, durations, environment names, and timestamps. If database query spans are also enabled, normalized SQL statements and their durations are sent. String and numeric SQL literals are replaced with placeholders before transmission.
 
 The destination and data-handling terms depend on the endpoint selected by the administrator. For the hosted Errorgap service, see the [Errorgap Privacy Policy](https://errorgap.com/privacy) and [Errorgap Terms of Service](https://errorgap.com/terms). Administrators using a self-hosted or third-party endpoint are responsible for that endpoint's data handling and disclosures.
 
@@ -97,6 +97,9 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.3.0 =
+* With APM enabled, errors reported during a request carry that request's transaction id, so Errorgap shows the error a request raised on its trace and links each occurrence to its request. The id is random and generated per request; it identifies nothing about a visitor.
 
 = 0.2.0 =
 * Report a plugin-defined set of PHP error severities (errors and warnings) instead of reading the site's global error-reporting level, so activating the plugin never changes how the rest of the site reports or displays errors. Adjustable with the `errorgap_reported_severities` filter.

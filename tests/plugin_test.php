@@ -37,6 +37,19 @@ function esc_url_raw($s) { return $s; }
 function sanitize_title($s) { return $s; }
 function __($s, $d = null) { return $s; }
 function esc_html__($s, $d = null) { return $s; }
+function is_front_page() { return false; }
+function is_home() { return false; }
+function is_single() { return false; }
+function is_page() { return false; }
+function is_category() { return false; }
+function is_tag() { return false; }
+function is_author() { return false; }
+function is_search() { return false; }
+function is_404() { return false; }
+function is_archive() { return false; }
+function is_attachment() { return false; }
+function is_admin() { return false; }
+function wp_generate_uuid4() { return '0192f3c4-7a1b-4c2d-9e3f-0123456789ab'; }
 function wp_remote_post($url, $args) { $GLOBALS['errorgap_captured'][] = json_decode($args['body'], true); return []; }
 
 require __DIR__ . '/../errorgap-wordpress.php';
@@ -111,6 +124,27 @@ $payload = $build->invoke($plugin, [
 $url = $payload['context']['url'] ?? '';
 check('reported url drops the query string', strpos($url, '?') === false);
 check('reported url does not leak secrets', strpos($url, 'super-secret') === false);
+
+// 6. With APM on, errors carry the request's transaction id, and the
+//    request's transaction is sent with the same id.
+check('without a transaction, no transaction_id', !isset($payload['context']['transaction_id']));
+$txProp = new ReflectionProperty($plugin, 'transaction_id');
+$txProp->setAccessible(true);
+$txProp->setValue($plugin, wp_generate_uuid4());
+$payload = $build->invoke($plugin, [
+    'type' => 'X', 'message' => 'm', 'file' => __FILE__, 'line' => 1,
+    'trace' => [], 'causes' => [], 'cause_traces' => [],
+]);
+check('an error carries the request transaction id', ($payload['context']['transaction_id'] ?? null) === wp_generate_uuid4());
+$startProp = new ReflectionProperty($plugin, 'request_start');
+$startProp->setAccessible(true);
+$startProp->setValue($plugin, microtime(true));
+$reset();
+$send = new ReflectionMethod($plugin, 'send_transaction');
+$send->setAccessible(true);
+$send->invoke($plugin, 12.5);
+$sent = $captured()[0] ?? [];
+check('the transaction is sent with the same id', ($sent['id'] ?? null) === wp_generate_uuid4());
 
 echo "\n" . ($failures === 0 ? "All tests passed." : "$failures test(s) failed.") . "\n";
 exit($failures === 0 ? 0 : 1);
