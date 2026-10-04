@@ -405,6 +405,20 @@ final class Errorgap_WordPress
     }
   }
 
+  /**
+   * The x-errorgap-trace header the Errorgap browser SDK sends with API calls
+   * (for example to the REST API), linking the browser's view of the call to
+   * this request's transaction. Only a well-formed UUID is accepted.
+   */
+  private function browser_trace_id(): ?string
+  {
+    if (!isset($_SERVER['HTTP_X_ERRORGAP_TRACE'])) {
+      return null;
+    }
+    $value = strtolower(sanitize_text_field(wp_unslash($_SERVER['HTTP_X_ERRORGAP_TRACE'])));
+    return preg_match('/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $value) === 1 ? $value : null;
+  }
+
   private function send_transaction(float $duration_ms): void
   {
     $settings = self::settings();
@@ -416,6 +430,7 @@ final class Errorgap_WordPress
 
     $payload = [
       'id' => $this->transaction_id,
+      'trace_id' => $this->browser_trace_id(),
       'kind' => 'web',
       'method' => $method,
       'path' => $this->wp_route_pattern(),
@@ -426,6 +441,9 @@ final class Errorgap_WordPress
       'occurred_at' => gmdate('Y-m-d\TH:i:s.') . sprintf('%03d', (int) (fmod($this->request_start, 1) * 1000)) . 'Z',
       'spans' => $this->db_spans(),
     ];
+    if ($payload['trace_id'] === null) {
+      unset($payload['trace_id']);
+    }
 
     $headers = [
       'Content-Type' => 'application/json',
