@@ -100,6 +100,7 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 
 = 0.3.0 =
 * With APM enabled, errors reported during a request carry that request's transaction id, so Errorgap shows the error a request raised on its trace and links each occurrence to its request. The id is random and generated per request; it identifies nothing about a visitor.
+* With APM enabled, a request carrying the `x-errorgap-trace` header sent by the Errorgap browser SDK records it on its transaction, so Errorgap links the browser's view of an API call to the server request that answered it. Only a random UUID is accepted.
 
 = 0.2.0 =
 * Report a plugin-defined set of PHP error severities (errors and warnings) instead of reading the site's global error-reporting level, so activating the plugin never changes how the rest of the site reports or displays errors. Adjustable with the `errorgap_reported_severities` filter.

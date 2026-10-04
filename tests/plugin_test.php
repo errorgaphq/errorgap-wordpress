@@ -145,6 +145,20 @@ $send->setAccessible(true);
 $send->invoke($plugin, 12.5);
 $sent = $captured()[0] ?? [];
 check('the transaction is sent with the same id', ($sent['id'] ?? null) === wp_generate_uuid4());
+check('without a browser trace header, no trace_id', !array_key_exists('trace_id', $sent));
+
+// 7. The browser SDK's x-errorgap-trace header is recorded on the transaction.
+$_SERVER['HTTP_X_ERRORGAP_TRACE'] = '0192F3C4-7A1B-4C2D-9E3F-0123456789AB';
+$reset();
+$send->invoke($plugin, 12.5);
+$sent = $captured()[0] ?? [];
+check('the browser trace id is recorded', ($sent['trace_id'] ?? null) === '0192f3c4-7a1b-4c2d-9e3f-0123456789ab');
+$_SERVER['HTTP_X_ERRORGAP_TRACE'] = 'not-a-uuid';
+$reset();
+$send->invoke($plugin, 12.5);
+$sent = $captured()[0] ?? [];
+check('a malformed browser trace header is ignored', !array_key_exists('trace_id', $sent));
+unset($_SERVER['HTTP_X_ERRORGAP_TRACE']);
 
 echo "\n" . ($failures === 0 ? "All tests passed." : "$failures test(s) failed.") . "\n";
 exit($failures === 0 ? 0 : 1);
