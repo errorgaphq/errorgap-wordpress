@@ -3,8 +3,8 @@
 /**
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
- * Description: Reports WordPress PHP errors, exceptions, and shutdown fatals to Errorgap.
- * Version: 0.3.0
+ * Description: Reports WordPress PHP errors, exceptions, shutdown fatals and, optionally, sign-ins to Errorgap.
+ * Version: 0.4.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.3.0');
+define('ERRORGAP_WP_VERSION', '0.4.0');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 
 final class Errorgap_WordPress
@@ -88,6 +88,7 @@ final class Errorgap_WordPress
       'sample_rate' => 1.0,
       'apm_enabled' => false,
       'apm_db_queries' => false,
+      'auth_events' => false,
     ];
   }
 
@@ -106,6 +107,12 @@ final class Errorgap_WordPress
     $this->previous_error_handler = set_error_handler([$this, 'handle_error']);
     $this->previous_exception_handler = set_exception_handler([$this, 'handle_exception']);
     register_shutdown_function([$this, 'handle_shutdown']);
+
+    if (!empty(self::settings()['auth_events'])) {
+      add_action('wp_login', [$this, 'on_login'], 10, 2);
+      add_action('wp_login_failed', [$this, 'on_login_failed'], 10, 2);
+      add_action('after_password_reset', [$this, 'on_password_reset'], 10, 1);
+    }
 
     if ($this->apm_enabled()) {
       $this->request_start = microtime(true);
@@ -149,6 +156,7 @@ final class Errorgap_WordPress
       'sample_rate' => __('Sample rate', 'errorgap'),
       'apm_enabled' => __('APM enabled', 'errorgap'),
       'apm_db_queries' => __('APM DB queries', 'errorgap'),
+      'auth_events' => __('Sign-ins', 'errorgap'),
     ];
 
     foreach ($fields as $field => $label) {
@@ -185,6 +193,7 @@ final class Errorgap_WordPress
     $settings['sample_rate'] = max(0.0, min(1.0, $settings['sample_rate']));
     $settings['apm_enabled'] = !empty($input['apm_enabled']);
     $settings['apm_db_queries'] = !empty($input['apm_db_queries']);
+    $settings['auth_events'] = !empty($input['auth_events']);
 
     return $settings;
   }
@@ -260,6 +269,17 @@ final class Errorgap_WordPress
       return;
     }
 
+    if ($field === 'auth_events') {
+    ?>
+      <label>
+        <input type="checkbox" name="<?php echo esc_attr($name); ?>" value="1" <?php checked(!empty($value)); ?>>
+        <?php echo esc_html__('Report sign-ins (wp-login.php, plus failed XML-RPC and REST attempts) to Security › Logins', 'errorgap'); ?>
+      </label>
+      <p class="description"><?php echo esc_html__('Sends the user name, IP address and browser of each sign-in, failed attempt and password reset. Passwords are never sent. Errorgap can store user names hashed.', 'errorgap'); ?></p>
+    <?php
+      return;
+    }
+
     if ($field === 'project_key') {
     ?>
       <input class="regular-text" type="password" name="<?php echo esc_attr($name); ?>" value="<?php echo esc_attr((string) $value); ?>" autocomplete="off">
@@ -285,6 +305,83 @@ final class Errorgap_WordPress
     } elseif ($field === 'environment') {
       echo '<p class="description">' . esc_html__('Defaults to WP_ENVIRONMENT_TYPE, then production.', 'errorgap') . '</p>';
     }
+  }
+
+  /** `wp_login`: a user signed in. */
+  public function on_login($user_login, $user = null): void
+  {
+    $this->send_sign_in('success', (string) $user_login);
+  }
+
+  /** `wp_login_failed`: wp-login.php, XML-RPC and REST authentication. */
+  public function on_login_failed($username, $error = null): void
+  {
+    $this->send_sign_in('failure', (string) $username);
+  }
+
+  /** `after_password_reset`: a user set a new password from a reset link. */
+  public function on_password_reset($user): void
+  {
+    $login = is_object($user) && isset($user->user_login) ? (string) $user->user_login : '';
+    $this->send_sign_in('password_reset', $login);
+  }
+
+  /**
+   * POST one sign-in to /logins/web. The path drops the query string; the
+   * IP is REMOTE_ADDR (the `errorgap_sign_in_ip` filter can supply a
+   * proxy's client address).
+   */
+  private function send_sign_in(string $outcome, string $user): void
+  {
+    $settings = self::settings();
+    $url = trailingslashit(rtrim((string) $settings['endpoint'], '/')) . 'api/projects/' . rawurlencode((string) $settings['project_slug']) . '/logins/web';
+
+    $method = isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : '';
+    $path = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '';
+    $path = strtok($path, '?') ?: '';
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+    $ip = (string) apply_filters('errorgap_sign_in_ip', $ip);
+    $agent = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
+
+    $event = [
+      'occurred_at' => gmdate('Y-m-d\TH:i:s\Z'),
+      'outcome' => $outcome,
+    ];
+    if ($user !== '') {
+      $event['user'] = $user;
+    }
+    if (filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+      $event['ip'] = $ip;
+    }
+    if ($agent !== '') {
+      $event['user_agent'] = substr($agent, 0, 512);
+    }
+    if ($method !== '' && $path !== '') {
+      $event['path'] = substr($method . ' ' . $path, 0, 200);
+    }
+
+    $app = (string) apply_filters('errorgap_sign_in_app', (string) wp_parse_url(home_url('/'), PHP_URL_HOST));
+    $payload = [
+      'app' => $app !== '' ? $app : (string) $settings['project_slug'],
+      'environment' => $this->environment_name(),
+      'sdk' => 'errorgap-wordpress ' . ERRORGAP_WP_VERSION,
+      'events' => [$event],
+    ];
+
+    $headers = [
+      'Content-Type' => 'application/json',
+      'User-Agent' => 'errorgap-wordpress/' . ERRORGAP_WP_VERSION . '; ' . home_url('/'),
+    ];
+    if (!empty($settings['project_key'])) {
+      $headers['X-Errorgap-Project-Key'] = (string) $settings['project_key'];
+    }
+
+    wp_remote_post($url, [
+      'headers' => $headers,
+      'body' => wp_json_encode($payload),
+      'timeout' => 3,
+      'blocking' => false,
+    ]);
   }
 
   public function apm_maybe_enable_savequeries(): void
@@ -959,6 +1056,7 @@ final class Errorgap_WordPress
     $flags = [
       'apm_enabled' => 'ERRORGAP_APM_ENABLED',
       'apm_db_queries' => 'ERRORGAP_APM_DB_QUERIES',
+      'auth_events' => 'ERRORGAP_AUTH_EVENTS',
     ];
     foreach ($flags as $setting => $constant) {
       if (defined($constant)) {

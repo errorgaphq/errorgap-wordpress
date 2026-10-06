@@ -38,6 +38,10 @@ Constants take precedence over values saved on the settings screen, and keep the
 - Sample rate: `1.0` reports every captured notice
 - APM: optionally records request timings and sends performance transactions
 - APM DB queries: optionally includes normalized SQL spans and their durations
+- Sign-ins: optionally reports sign-ins, failed attempts (wp-login.php, XML-RPC,
+  REST) and password resets to Security › Logins (`ERRORGAP_AUTH_EVENTS`).
+  The app is named after the site's host (`errorgap_sign_in_app` filter);
+  behind a proxy, supply the client IP with the `errorgap_sign_in_ip` filter.
 
 Notices are posted to:
 
@@ -100,6 +104,10 @@ When APM is enabled, the plugin also sends request paths, response status
 codes, durations, environment names, and timestamps. Enabling database query
 spans adds normalized SQL statements and durations; string and numeric SQL
 literals are replaced with placeholders before transmission.
+
+When sign-in reporting is enabled, each sign-in, failed attempt and password
+reset sends the user name, IP address, user agent, request method and path
+(without the query string), outcome and timestamp. Passwords are never sent.
 
 For the hosted Errorgap service, see the [Privacy Policy](https://errorgap.com/privacy)
 and [Terms of Service](https://errorgap.com/terms). Administrators using a
