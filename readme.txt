@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.0
+Stable tag: 0.4.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -53,6 +53,9 @@ The plugin reports its own set of PHP error severities (errors and warnings) ind
 
 `add_filter('errorgap_reported_severities', fn() => E_ALL & ~E_DEPRECATED);`
 
+Sign-ins:
+Optionally report sign-ins to Errorgap's Security › Logins: each successful sign-in (`wp_login`), each failed attempt on wp-login.php, XML-RPC or REST authentication (`wp_login_failed`), and each password reset (`after_password_reset`). Errorgap flags a new IP address, country or hour for a user and can alert on a sign-in after many failures. Off by default; turn it on with the Sign-ins setting or `define('ERRORGAP_AUTH_EVENTS', true);`. The app is named after the site's host (filter `errorgap_sign_in_app`); behind a proxy, supply the client address with the `errorgap_sign_in_ip` filter.
+
 Constants:
 Every connection setting can also be defined in `wp-config.php`, above the `/* That's all, stop editing! */` line. Constants take precedence over values saved on the settings screen, and keep the project key out of the database:
 
@@ -61,6 +64,7 @@ Every connection setting can also be defined in `wp-config.php`, above the `/* T
 `define('ERRORGAP_API_KEY', getenv('ERRORGAP_API_KEY'));`
 `define('ERRORGAP_ENVIRONMENT', 'production'); // optional`
 `define('ERRORGAP_ENABLED', true); // optional; implied when endpoint and slug are defined`
+`define('ERRORGAP_AUTH_EVENTS', true); // optional; report sign-ins`
 
 Empty values and `getenv()` misses are ignored, so the defines are safe in environments where the variables are not set.
 
@@ -71,6 +75,8 @@ This plugin connects to the Errorgap endpoint configured by the site administrat
 Error reports may include error types and messages, request URLs, HTTP methods and hostnames, backtrace file paths and function names, source-code excerpts surrounding failing lines, WordPress and PHP versions, environment and site URLs, sanitized GET and POST parameters, and the ID, login, email address, and roles of a logged-in WordPress user. Fields whose names indicate passwords, authorization values, tokens, secrets, keys, nonces, or cookies are replaced with `[FILTERED]`; other request values may still contain personal or sensitive information.
 
 When APM is enabled, transactions may include a random per-request identifier (also attached to errors from that request), request paths, response status codes, durations, environment names, and timestamps. If database query spans are also enabled, normalized SQL statements and their durations are sent. String and numeric SQL literals are replaced with placeholders before transmission.
+
+When sign-in reporting is enabled, each sign-in, failed sign-in attempt and password reset sends the user name entered or signed in with, the IP address, the browser user agent, the request method and path (without the query string), the outcome and a timestamp. Passwords are never sent. Errorgap can be set to store user names as a salted hash.
 
 The destination and data-handling terms depend on the endpoint selected by the administrator. For the hosted Errorgap service, see the [Errorgap Privacy Policy](https://errorgap.com/privacy) and [Errorgap Terms of Service](https://errorgap.com/terms). Administrators using a self-hosted or third-party endpoint are responsible for that endpoint's data handling and disclosures.
 
@@ -97,6 +103,9 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.4.0 =
+* Optionally report sign-ins to Errorgap's Security › Logins: successful sign-ins, failed attempts on wp-login.php, XML-RPC and REST authentication, and password resets, with the user name, IP address and browser. Off by default (Sign-ins setting or `ERRORGAP_AUTH_EVENTS`). Passwords are never sent.
 
 = 0.3.0 =
 * With APM enabled, errors reported during a request carry that request's transaction id, so Errorgap shows the error a request raised on its trace and links each occurrence to its request. The id is random and generated per request; it identifies nothing about a visitor.

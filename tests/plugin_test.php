@@ -13,6 +13,7 @@ define('WP_CONTENT_DIR', __DIR__); // treat this test file as "app" code
 define('ERRORGAP_ENDPOINT', 'http://127.0.0.1:9');
 define('ERRORGAP_PROJECT_SLUG', 'demo');
 define('ERRORGAP_ENVIRONMENT', 'production');
+define('ERRORGAP_AUTH_EVENTS', true);
 
 $GLOBALS['errorgap_captured'] = [];
 
@@ -50,7 +51,8 @@ function is_archive() { return false; }
 function is_attachment() { return false; }
 function is_admin() { return false; }
 function wp_generate_uuid4() { return '0192f3c4-7a1b-4c2d-9e3f-0123456789ab'; }
-function wp_remote_post($url, $args) { $GLOBALS['errorgap_captured'][] = json_decode($args['body'], true); return []; }
+function wp_parse_url($url, $component = -1) { return parse_url($url, $component); }
+function wp_remote_post($url, $args) { $GLOBALS['errorgap_captured'][] = json_decode($args['body'], true); $GLOBALS['errorgap_urls'][] = $url; return []; }
 
 require __DIR__ . '/../errorgap-wordpress.php';
 
@@ -159,6 +161,33 @@ $send->invoke($plugin, 12.5);
 $sent = $captured()[0] ?? [];
 check('a malformed browser trace header is ignored', !array_key_exists('trace_id', $sent));
 unset($_SERVER['HTTP_X_ERRORGAP_TRACE']);
+
+// 8. Sign-ins (ERRORGAP_AUTH_EVENTS): wp_login, wp_login_failed and
+//    after_password_reset post to /logins/web without the query string.
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_SERVER['REQUEST_URI'] = '/wp-login.php?redirect_to=%2Fwp-admin&reauth=1';
+$_SERVER['REMOTE_ADDR'] = '203.0.113.140';
+$_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0 Chrome/129.0';
+$_POST['pwd'] = 'hunter2';
+$reset();
+$GLOBALS['errorgap_urls'] = [];
+$plugin->on_login_failed('admin');
+$plugin->on_login('editor', null);
+$plugin->on_password_reset((object) ['user_login' => 'editor']);
+$events = array_map(fn($p) => $p['events'][0] ?? [], $captured());
+check('three sign-ins are sent', count($events) === 3);
+check('to /logins/web', ($GLOBALS['errorgap_urls'][0] ?? '') === 'http://127.0.0.1:9/api/projects/demo/logins/web');
+check('outcomes are failure, success, password_reset', array_column($events, 'outcome') === ['failure', 'success', 'password_reset']);
+check('the user names are sent', array_column($events, 'user') === ['admin', 'editor', 'editor']);
+check('the path drops the query string', ($events[0]['path'] ?? '') === 'POST /wp-login.php');
+check('ip and user agent are sent', ($events[0]['ip'] ?? '') === '203.0.113.140' && ($events[0]['user_agent'] ?? '') === 'Mozilla/5.0 Chrome/129.0');
+check('the app is the site host', ($captured()[0]['app'] ?? '') === 'wp.test');
+check('the password is never sent', strpos(json_encode($captured()), 'hunter2') === false);
+$_SERVER['REMOTE_ADDR'] = 'not an ip';
+$reset();
+$plugin->on_login_failed('admin');
+check('an invalid ip is dropped', !isset($captured()[0]['events'][0]['ip']));
+unset($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $_SERVER['REMOTE_ADDR'], $_SERVER['HTTP_USER_AGENT'], $_POST['pwd']);
 
 echo "\n" . ($failures === 0 ? "All tests passed." : "$failures test(s) failed.") . "\n";
 exit($failures === 0 ? 0 : 1);
