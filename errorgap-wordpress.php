@@ -4,7 +4,7 @@
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, shutdown fatals and, optionally, sign-ins to Errorgap.
- * Version: 0.4.0
+ * Version: 0.5.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,8 +20,10 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.4.0');
+define('ERRORGAP_WP_VERSION', '0.5.0');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
+// The @errorgap/browser release bundled at assets/errorgap-browser.js.
+define('ERRORGAP_BROWSER_SDK_VERSION', '0.4.0');
 
 final class Errorgap_WordPress
 {
@@ -89,6 +91,7 @@ final class Errorgap_WordPress
       'apm_enabled' => false,
       'apm_db_queries' => false,
       'auth_events' => false,
+      'browser_sdk' => false,
     ];
   }
 
@@ -112,6 +115,11 @@ final class Errorgap_WordPress
       add_action('wp_login', [$this, 'on_login'], 10, 2);
       add_action('wp_login_failed', [$this, 'on_login_failed'], 10, 2);
       add_action('after_password_reset', [$this, 'on_password_reset'], 10, 1);
+    }
+
+    if (!empty(self::settings()['browser_sdk'])) {
+      // Public pages only: wp_enqueue_scripts does not run on wp-admin or wp-login.php.
+      add_action('wp_enqueue_scripts', [$this, 'enqueue_browser_sdk']);
     }
 
     if ($this->apm_enabled()) {
@@ -157,6 +165,7 @@ final class Errorgap_WordPress
       'apm_enabled' => __('APM enabled', 'errorgap'),
       'apm_db_queries' => __('APM DB queries', 'errorgap'),
       'auth_events' => __('Sign-ins', 'errorgap'),
+      'browser_sdk' => __('Browser errors & session replay', 'errorgap'),
     ];
 
     foreach ($fields as $field => $label) {
@@ -194,6 +203,7 @@ final class Errorgap_WordPress
     $settings['apm_enabled'] = !empty($input['apm_enabled']);
     $settings['apm_db_queries'] = !empty($input['apm_db_queries']);
     $settings['auth_events'] = !empty($input['auth_events']);
+    $settings['browser_sdk'] = !empty($input['browser_sdk']);
 
     return $settings;
   }
@@ -280,6 +290,17 @@ final class Errorgap_WordPress
       return;
     }
 
+    if ($field === 'browser_sdk') {
+    ?>
+      <label>
+        <input type="checkbox" name="<?php echo esc_attr($name); ?>" value="1" <?php checked(!empty($value)); ?>>
+        <?php echo esc_html__('Load the Errorgap browser SDK on the public site', 'errorgap'); ?>
+      </label>
+      <p class="description"><?php echo esc_html__('Reports JavaScript errors from visitors\' browsers, and records session replay when it is on in the project\'s Errorgap settings: a timeline of page loads, failed requests, errors and rage clicks, plus page snapshots with every form field blanked. Needs the project key. Not loaded in wp-admin or on the login page.', 'errorgap'); ?></p>
+    <?php
+      return;
+    }
+
     if ($field === 'project_key') {
     ?>
       <input class="regular-text" type="password" name="<?php echo esc_attr($name); ?>" value="<?php echo esc_attr((string) $value); ?>" autocomplete="off">
@@ -305,6 +326,38 @@ final class Errorgap_WordPress
     } elseif ($field === 'environment') {
       echo '<p class="description">' . esc_html__('Defaults to WP_ENVIRONMENT_TYPE, then production.', 'errorgap') . '</p>';
     }
+  }
+
+  /**
+   * `wp_enqueue_scripts`: load the bundled browser SDK in the page head,
+   * configured inline (the ingest-only project key is meant to be public).
+   */
+  public function enqueue_browser_sdk(): void
+  {
+    $settings = self::settings();
+    if (empty($settings['browser_sdk']) || !$this->is_configured() || empty($settings['project_key'])) {
+      return;
+    }
+
+    $config = [
+      'endpoint' => (string) $settings['endpoint'],
+      'projectSlug' => (string) $settings['project_slug'],
+      'apiKey' => (string) $settings['project_key'],
+      'environment' => $this->environment_name(),
+    ];
+
+    wp_enqueue_script(
+      'errorgap-browser',
+      plugins_url('assets/errorgap-browser.js', __FILE__),
+      [],
+      ERRORGAP_BROWSER_SDK_VERSION,
+      false
+    );
+    wp_add_inline_script(
+      'errorgap-browser',
+      'window.Errorgap && window.Errorgap.init(' . wp_json_encode((array) apply_filters('errorgap_browser_config', $config)) . ');',
+      'after'
+    );
   }
 
   /** `wp_login`: a user signed in. */
@@ -1057,6 +1110,7 @@ final class Errorgap_WordPress
       'apm_enabled' => 'ERRORGAP_APM_ENABLED',
       'apm_db_queries' => 'ERRORGAP_APM_DB_QUERIES',
       'auth_events' => 'ERRORGAP_AUTH_EVENTS',
+      'browser_sdk' => 'ERRORGAP_BROWSER_SDK',
     ];
     foreach ($flags as $setting => $constant) {
       if (defined($constant)) {

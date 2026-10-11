@@ -22,7 +22,10 @@ function add_filter(...$a) {}
 function register_activation_hook(...$a) {}
 function apply_filters($tag, $value) { return $value; }
 function plugin_basename($file) { return basename($file); }
-function get_option($key, $default = false) { return $default; }
+function get_option($key, $default = false) { return $GLOBALS['errorgap_option'] ?? $default; }
+function plugins_url($path, $file) { return 'http://wp.test/wp-content/plugins/errorgap/' . $path; }
+function wp_enqueue_script($handle, $src, $deps = [], $ver = false, $args = false) { $GLOBALS['errorgap_scripts'][$handle] = ['src' => $src, 'ver' => $ver]; }
+function wp_add_inline_script($handle, $data, $position = 'after') { $GLOBALS['errorgap_inline'][$handle] = $data; }
 function home_url($path = '/') { return 'http://wp.test' . $path; }
 function site_url() { return 'http://wp.test'; }
 function get_bloginfo($key) { return '6.7'; }
@@ -188,6 +191,34 @@ $reset();
 $plugin->on_login_failed('admin');
 check('an invalid ip is dropped', !isset($captured()[0]['events'][0]['ip']));
 unset($_SERVER['REQUEST_METHOD'], $_SERVER['REQUEST_URI'], $_SERVER['REMOTE_ADDR'], $_SERVER['HTTP_USER_AGENT'], $_POST['pwd']);
+
+// Browser SDK: loaded on the public site only when switched on, with a key.
+$GLOBALS['errorgap_scripts'] = [];
+$GLOBALS['errorgap_inline'] = [];
+$plugin->enqueue_browser_sdk();
+check('the browser SDK is not loaded while the setting is off', $GLOBALS['errorgap_scripts'] === []);
+
+$GLOBALS['errorgap_option'] = ['browser_sdk' => true];
+$plugin->enqueue_browser_sdk();
+check('the browser SDK is not loaded without a project key', $GLOBALS['errorgap_scripts'] === []);
+
+$GLOBALS['errorgap_option'] = ['browser_sdk' => true, 'project_key' => 'egp_public_key'];
+$plugin->enqueue_browser_sdk();
+$script = $GLOBALS['errorgap_scripts']['errorgap-browser'] ?? [];
+check('the bundled SDK is enqueued', ($script['src'] ?? '') === 'http://wp.test/wp-content/plugins/errorgap/assets/errorgap-browser.js');
+check('versioned by the bundled release', ($script['ver'] ?? '') === ERRORGAP_BROWSER_SDK_VERSION);
+check('the key is not in the script URL', strpos($script['src'] ?? '', 'egp_public_key') === false);
+$inline = $GLOBALS['errorgap_inline']['errorgap-browser'] ?? '';
+preg_match('/init\((.*)\);$/', $inline, $m);
+$config = json_decode($m[1] ?? 'null', true);
+check('configured inline', $config === [
+  'endpoint' => 'http://127.0.0.1:9',
+  'projectSlug' => 'demo',
+  'apiKey' => 'egp_public_key',
+  'environment' => 'production',
+]);
+check('the bundled SDK file exists and matches the version', strpos((string) file_get_contents(__DIR__ . '/../assets/errorgap-browser.js'), '@errorgap/browser ' . ERRORGAP_BROWSER_SDK_VERSION) !== false);
+unset($GLOBALS['errorgap_option']);
 
 echo "\n" . ($failures === 0 ? "All tests passed." : "$failures test(s) failed.") . "\n";
 exit($failures === 0 ? 0 : 1);
