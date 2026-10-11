@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.0
+Stable tag: 0.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -56,6 +56,9 @@ The plugin reports its own set of PHP error severities (errors and warnings) ind
 Sign-ins:
 Optionally report sign-ins to Errorgap's Security › Logins: each successful sign-in (`wp_login`), each failed attempt on wp-login.php, XML-RPC or REST authentication (`wp_login_failed`), and each password reset (`after_password_reset`). Errorgap flags a new IP address, country or hour for a user and can alert on a sign-in after many failures. Off by default; turn it on with the Sign-ins setting or `define('ERRORGAP_AUTH_EVENTS', true);`. The app is named after the site's host (filter `errorgap_sign_in_app`); behind a proxy, supply the client address with the `errorgap_sign_in_ip` filter.
 
+Browser errors and session replay:
+Optionally load the Errorgap browser SDK (`@errorgap/browser`, bundled in the plugin at `assets/errorgap-browser.js`; no remote script) on the public site. It reports JavaScript errors from visitors' browsers, and records session replay when replay is switched on in the project's Errorgap settings. Not loaded in wp-admin or on the login page, and only when a project key is set. Off by default; turn it on with the "Browser errors & session replay" setting or `define('ERRORGAP_BROWSER_SDK', true);`. Adjust the browser configuration with the `errorgap_browser_config` filter. Mark content that must never be captured in a snapshot with `data-errorgap-block` (removed) or `data-errorgap-mask` (text replaced).
+
 Constants:
 Every connection setting can also be defined in `wp-config.php`, above the `/* That's all, stop editing! */` line. Constants take precedence over values saved on the settings screen, and keep the project key out of the database:
 
@@ -65,6 +68,7 @@ Every connection setting can also be defined in `wp-config.php`, above the `/* T
 `define('ERRORGAP_ENVIRONMENT', 'production'); // optional`
 `define('ERRORGAP_ENABLED', true); // optional; implied when endpoint and slug are defined`
 `define('ERRORGAP_AUTH_EVENTS', true); // optional; report sign-ins`
+`define('ERRORGAP_BROWSER_SDK', true); // optional; browser errors and session replay`
 
 Empty values and `getenv()` misses are ignored, so the defines are safe in environments where the variables are not set.
 
@@ -77,6 +81,8 @@ Error reports may include error types and messages, request URLs, HTTP methods a
 When APM is enabled, transactions may include a random per-request identifier (also attached to errors from that request), request paths, response status codes, durations, environment names, and timestamps. If database query spans are also enabled, normalized SQL statements and their durations are sent. String and numeric SQL literals are replaced with placeholders before transmission.
 
 When sign-in reporting is enabled, each sign-in, failed sign-in attempt and password reset sends the user name entered or signed in with, the IP address, the browser user agent, the request method and path (without the query string), the outcome and a timestamp. Passwords are never sent. Errorgap can be set to store user names as a salted hash.
+
+When browser errors and session replay are enabled, visitors' browsers send JavaScript error reports (error type and message, stack frames, page URL, browser user agent, language and screen size) directly to the Errorgap endpoint, and read the project's replay settings from it. While session replay is switched on for the project, a sampled share of visits also sends a session timeline: a random session id, browser, operating system and device class, page paths, failed request methods and paths (without query strings), error messages, and descriptions of rage or dead clicks (the clicked element's text). When the project captures page snapshots, a static copy of the page is sent on the chosen trigger with every form field value removed, scripts removed, and anything marked `data-errorgap-block` or `data-errorgap-mask` removed or masked. Keystrokes are never recorded. The project key is embedded in the page, as it is an ingest-only key. Errorgap derives the visitor's country from the request IP address.
 
 The destination and data-handling terms depend on the endpoint selected by the administrator. For the hosted Errorgap service, see the [Errorgap Privacy Policy](https://errorgap.com/privacy) and [Errorgap Terms of Service](https://errorgap.com/terms). Administrators using a self-hosted or third-party endpoint are responsible for that endpoint's data handling and disclosures.
 
@@ -94,6 +100,10 @@ See the External Service and Data Disclosure section above. Error reports can co
 
 Yes. Define `ERRORGAP_API_KEY` and the other connection constants in `wp-config.php`. Constants take precedence over saved settings.
 
+= Does session replay record what visitors type? =
+
+No. Keystrokes are never recorded, and page snapshots blank every form field before they leave the browser. Session replay only runs when "Browser errors & session replay" is on in the plugin and replay is switched on in the project's Errorgap settings.
+
 = Can I send reports to a self-hosted Errorgap instance? =
 
 Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The site administrator is responsible for the privacy, security, and data-handling practices of the selected endpoint.
@@ -103,6 +113,9 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.5.0 =
+* Optional "Browser errors & session replay" setting: loads the bundled Errorgap browser SDK on the public site to report JavaScript errors from visitors' browsers and, when the project has replay on, record session replay (a timeline of page loads, failed requests, errors and rage clicks, plus page snapshots with every form field blanked). Off by default (setting or `ERRORGAP_BROWSER_SDK`). Never loaded in wp-admin or on the login page.
 
 = 0.4.0 =
 * Optionally report sign-ins to Errorgap's Security › Logins: successful sign-ins, failed attempts on wp-login.php, XML-RPC and REST authentication, and password resets, with the user name, IP address and browser. Off by default (Sign-ins setting or `ERRORGAP_AUTH_EVENTS`). Passwords are never sent.

@@ -42,6 +42,15 @@ Constants take precedence over values saved on the settings screen, and keep the
   REST) and password resets to Security › Logins (`ERRORGAP_AUTH_EVENTS`).
   The app is named after the site's host (`errorgap_sign_in_app` filter);
   behind a proxy, supply the client IP with the `errorgap_sign_in_ip` filter.
+- Browser errors & session replay: optionally loads the bundled
+  `@errorgap/browser` (`assets/errorgap-browser.js`, unminified) on the public
+  site, to report JavaScript errors and record session replay when replay is on
+  for the project (`ERRORGAP_BROWSER_SDK`; needs the project key). Not loaded in
+  wp-admin or on the login page. Adjust its options with the
+  `errorgap_browser_config` filter. To update the bundle, build the release from
+  `errorgap-js` with `npx tsup src/index.ts --format iife --global-name Errorgap
+  --platform browser --target es2020 --no-config` and bump
+  `ERRORGAP_BROWSER_SDK_VERSION`.
 
 Notices are posted to:
 
