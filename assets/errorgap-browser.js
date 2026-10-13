@@ -1,5 +1,5 @@
 /*!
- * @errorgap/browser 0.4.0, bundled unminified for the Errorgap WordPress plugin.
+ * @errorgap/browser 0.5.0, bundled unminified for the Errorgap WordPress plugin.
  * Source: https://github.com/errorgaphq/errorgap-js (MIT). Includes web-vitals (Apache-2.0).
  * Built with: tsup src/index.ts --format iife --global-name Errorgap --target es2020
  */
@@ -411,7 +411,7 @@ var Errorgap = (() => {
   }
 
   // src/version.ts
-  var VERSION = "0.4.0";
+  var VERSION = "0.5.0";
 
   // src/notice.ts
   function buildNotice(error, configuration, options = {}) {
@@ -1628,6 +1628,7 @@ var Errorgap = (() => {
   // src/replay/session.ts
   var IDLE_TIMEOUT_MS = 30 * 60 * 1e3;
   var STORAGE_KEY = "errorgap:replay-session";
+  var BUFFER_KEY = "errorgap:replay-buffer";
   function currentSession(now = Date.now()) {
     const stored = read();
     if (stored && now - stored.lastActivity < IDLE_TIMEOUT_MS) {
@@ -1637,7 +1638,31 @@ var Errorgap = (() => {
     }
     const session = { id: uuid(), startedAt: now, lastActivity: now, hadError: false };
     save(session);
+    clearBuffer();
     return session;
+  }
+  function saveBuffer(sessionId, events) {
+    try {
+      sessionStorage.setItem(BUFFER_KEY, JSON.stringify({ id: sessionId, events }));
+    } catch {
+    }
+  }
+  function takeBuffer(sessionId) {
+    try {
+      const raw = sessionStorage.getItem(BUFFER_KEY);
+      sessionStorage.removeItem(BUFFER_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return parsed.id === sessionId && Array.isArray(parsed.events) ? parsed.events : [];
+    } catch {
+      return [];
+    }
+  }
+  function clearBuffer() {
+    try {
+      sessionStorage.removeItem(BUFFER_KEY);
+    } catch {
+    }
   }
   function save(session) {
     try {
@@ -1732,6 +1757,7 @@ var Errorgap = (() => {
   // src/replay/recorder.ts
   var MAX_BATCH_EVENTS = 200;
   var MAX_BUFFERED_EVENTS = 1e3;
+  var MAX_PENDING_EVENTS = 300;
   var MAX_LABEL = 200;
   var RAGE_CLICKS = 5;
   var RAGE_WINDOW_MS = 2e3;
@@ -1761,6 +1787,7 @@ var Errorgap = (() => {
       this.session = currentSession();
       this.agent = describeAgent();
       this.lastPath = location.pathname;
+      if (!this.session.hadError) this.events = takeBuffer(this.session.id);
       this.push({ type: "page_load", label: `Loaded ${location.pathname}` });
       this.watchNavigations();
       this.watchRequests();
@@ -1811,6 +1838,11 @@ var Errorgap = (() => {
     /** Send what is recorded. `final` is the page going away: use a beacon. */
     flush(final) {
       if (this.state !== "recording") return;
+      if (!this.session.hadError) {
+        saveBuffer(this.session.id, this.events);
+        return;
+      }
+      clearBuffer();
       do {
         const events = this.events.splice(0, MAX_BATCH_EVENTS);
         const sentOffsets = new Set(events.map((e2) => e2.t));
@@ -1847,6 +1879,7 @@ var Errorgap = (() => {
         this.stop();
         this.events = [];
         this.snapshots = [];
+        clearBuffer();
         return;
       }
       if (!decision.captureSnaps) {
@@ -1867,6 +1900,10 @@ var Errorgap = (() => {
     // ── Events ─────────────────────────────────────────────────────────────────
     push(event) {
       if (this.state === "off") return;
+      if (!this.session.hadError && this.events.length >= MAX_PENDING_EVENTS) {
+        const dropped = this.events.shift();
+        if (dropped.has_snap) this.snapshots = this.snapshots.filter((s2) => s2.t !== dropped.t);
+      }
       if (this.events.length >= MAX_BUFFERED_EVENTS) return;
       this.events.push({ ...event, t: event.t ?? this.offset(), label: trim(event.label) });
       this.session.lastActivity = Date.now();
