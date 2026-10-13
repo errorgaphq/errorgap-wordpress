@@ -4,7 +4,7 @@
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, shutdown fatals and, optionally, sign-ins to Errorgap.
- * Version: 0.6.0
+ * Version: 0.7.0
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.6.0');
+define('ERRORGAP_WP_VERSION', '0.7.0');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 // The @errorgap/browser release bundled at assets/errorgap-browser.js.
 define('ERRORGAP_BROWSER_SDK_VERSION', '0.5.0');
@@ -705,7 +705,17 @@ final class Errorgap_WordPress
 
     $settings = self::settings();
     $url = trailingslashit(rtrim((string) $settings['endpoint'], '/')) . 'api/projects/' . rawurlencode((string) $settings['project_slug']) . '/notices';
-    $payload = $this->build_payload($error);
+    /**
+     * Filters a notice before it is sent to Errorgap.
+     *
+     * Return the notice, changed or not, or false to drop it.
+     *
+     * @param array $payload The notice: errors, context, environment, session, params.
+     */
+    $payload = apply_filters('errorgap_before_notify', $this->build_payload($error));
+    if (!is_array($payload) || empty($payload['errors'])) {
+      return;
+    }
     $headers = [
       'Content-Type' => 'application/json',
       'User-Agent' => 'errorgap-wordpress/' . ERRORGAP_WP_VERSION . '; ' . home_url('/'),

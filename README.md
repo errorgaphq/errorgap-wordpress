@@ -123,6 +123,17 @@ and [Terms of Service](https://errorgap.com/terms). Administrators using a
 self-hosted or third-party endpoint are responsible for that endpoint's data
 handling and disclosures.
 
+## Changing or dropping notices
+
+```php
+add_filter('errorgap_before_notify', function (array $notice) {
+    if (strpos($notice['errors'][0]['message'], 'some-noisy-plugin') !== false) {
+        return false; // drop it
+    }
+    return $notice;   // or return it changed
+});
+```
+
 ## License
 
 GPL-2.0-or-later.

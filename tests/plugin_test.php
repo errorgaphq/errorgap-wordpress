@@ -20,7 +20,7 @@ $GLOBALS['errorgap_captured'] = [];
 function add_action(...$a) {}
 function add_filter(...$a) {}
 function register_activation_hook(...$a) {}
-function apply_filters($tag, $value) { return $value; }
+function apply_filters($tag, $value) { $f = $GLOBALS['errorgap_filters'][$tag] ?? null; return $f ? $f($value) : $value; }
 function plugin_basename($file) { return basename($file); }
 function get_option($key, $default = false) { return $GLOBALS['errorgap_option'] ?? $default; }
 function plugins_url($path, $file) { return 'http://wp.test/wp-content/plugins/errorgap/' . $path; }
@@ -84,6 +84,20 @@ $plugin->handle_error(E_USER_WARNING, 'gateway slow', __FILE__, 20);
 $payload = $captured()[0] ?? null;
 check('warning is reported', $payload !== null && $payload['errors'][0]['type'] === 'E_USER_WARNING');
 check('warning frame is marked in_app', $payload !== null && ($payload['errors'][0]['backtrace'][0]['in_app'] ?? null) === true);
+
+// 2b. The errorgap_before_notify filter can change a notice or drop it.
+$reset();
+$GLOBALS['errorgap_filters']['errorgap_before_notify'] = static function (array $notice) {
+    $notice['context']['team'] = 'billing';
+    return $notice;
+};
+$plugin->handle_error(E_USER_WARNING, 'tagged by a filter', __FILE__, 21);
+check('a filter can change the notice', ($captured()[0]['context']['team'] ?? null) === 'billing');
+$reset();
+$GLOBALS['errorgap_filters']['errorgap_before_notify'] = static function (array $notice) { return false; };
+$plugin->handle_error(E_USER_WARNING, 'dropped by a filter', __FILE__, 22);
+check('a filter can drop the notice', count($captured()) === 0);
+unset($GLOBALS['errorgap_filters']['errorgap_before_notify']);
 
 // 3. A nested exception reports context.causes and merges the cause's frames.
 $reset();
