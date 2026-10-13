@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.5.0
+Stable tag: 0.6.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -113,6 +113,9 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.6.0 =
+* Session replay on the public site keeps only sessions where an error happened: the bundled browser SDK (now 0.5.0) holds a visit's timeline in the visitor's browser and sends it only if an error is reported, so sessions without an error are never sent to Errorgap.
 
 = 0.5.0 =
 * Optional "Browser errors & session replay" setting: loads the bundled Errorgap browser SDK on the public site to report JavaScript errors from visitors' browsers and, when the project has replay on, record session replay (a timeline of page loads, failed requests, errors and rage clicks, plus page snapshots with every form field blanked). Off by default (setting or `ERRORGAP_BROWSER_SDK`). Never loaded in wp-admin or on the login page.
