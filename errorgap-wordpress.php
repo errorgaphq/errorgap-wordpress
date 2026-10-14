@@ -4,7 +4,7 @@
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, shutdown fatals and, optionally, sign-ins to Errorgap.
- * Version: 0.7.1
+ * Version: 0.7.2
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.7.1');
+define('ERRORGAP_WP_VERSION', '0.7.2');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 // The @errorgap/browser release bundled at assets/errorgap-browser.js.
 define('ERRORGAP_BROWSER_SDK_VERSION', '0.6.0');
@@ -37,6 +37,13 @@ final class Errorgap_WordPress
   // deprecations, and strict notices are not, to keep reports actionable.
   // Filter `errorgap_reported_severities` to customize.
   private const DEFAULT_REPORTED_SEVERITIES = E_ALL & ~E_NOTICE & ~E_USER_NOTICE & ~E_DEPRECATED & ~E_USER_DEPRECATED;
+
+  // What error_reporting() returns inside an expression silenced with `@`: 0
+  // before PHP 8, and only the fatal severities from PHP 8 on.
+  private const SUPPRESSED_REPORTING_LEVELS = [
+    0,
+    E_ERROR | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR | E_PARSE,
+  ];
 
   private static ?Errorgap_WordPress $instance = null;
 
@@ -457,7 +464,7 @@ final class Errorgap_WordPress
     // decoupled from the site's global error-reporting level so enabling the
     // plugin never changes, and is never changed by, how the rest of the site
     // reports or displays PHP errors.
-    if (($this->reported_severities() & $severity) !== 0) {
+    if (($this->reported_severities() & $severity) !== 0 && !$this->is_suppressed($severity)) {
       $this->notify($this->error_payload([
         'type' => $this->php_error_type($severity),
         'message' => $message,
@@ -474,6 +481,18 @@ final class Errorgap_WordPress
     }
 
     return false;
+  }
+
+  /**
+   * Whether the code that raised this error silenced it with `@`, as core does
+   * for expected failures such as get_filesystem_method()'s `@fopen()` write
+   * test. Such an error isn't a problem to report. Fatal severities aren't
+   * silenced by `@`, so they're still reported.
+   */
+  private function is_suppressed(int $severity): bool
+  {
+    $level = error_reporting();
+    return ($level & $severity) === 0 && in_array($level, self::SUPPRESSED_REPORTING_LEVELS, true);
   }
 
   public function handle_exception(Throwable $exception): void

@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.7.1
+Stable tag: 0.7.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -49,7 +49,7 @@ APM:
 Optionally record request timings and send APM transactions. Database query spans can also be included; SQL string and numeric literals are replaced with placeholders before transmission. APM can also be enabled from `wp-config.php` with `define('ERRORGAP_APM_ENABLED', true);` and `define('ERRORGAP_APM_DB_QUERIES', true);`.
 
 Reported severities:
-The plugin reports its own set of PHP error severities (errors and warnings) independently of the site's global error-reporting level, so activating it never changes how the rest of your site reports or displays PHP errors. Notices, deprecations, and strict notices are not reported by default. Adjust the set with the `errorgap_reported_severities` filter:
+The plugin reports its own set of PHP error severities (errors and warnings) independently of the site's global error-reporting level, so activating it never changes how the rest of your site reports or displays PHP errors. Notices, deprecations, and strict notices are not reported by default, and neither are errors the code silenced with `@`, such as core's expected write-test failures. Adjust the set with the `errorgap_reported_severities` filter:
 
 `add_filter('errorgap_reported_severities', fn() => E_ALL & ~E_DEPRECATED);`
 
@@ -113,6 +113,9 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.7.2 =
+* Errors silenced with `@` are no longer reported. WordPress core expects some failures and silences them, such as the `@fopen()` write test that runs on the Plugins screen when `wp-content` isn't writable, which was reported as a new group on every visit. Before PHP 8, `@` sets the error level to 0, so a site that turns error reporting off entirely with `error_reporting(0)` on PHP 7.4 no longer reports warnings either.
 
 = 0.7.1 =
 * The bundled browser SDK is now 0.6.0: it no longer reports errors visitors' browser extensions throw or cross-origin "Script error." noise, sends an identical error at most once a second, keeps reports while the visitor is offline, retries failed sends, and follows the project's "What SDKs send" switches in Errorgap.
