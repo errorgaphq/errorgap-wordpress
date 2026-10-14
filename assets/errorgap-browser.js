@@ -1,5 +1,5 @@
 /*!
- * @errorgap/browser 0.5.0, bundled unminified for the Errorgap WordPress plugin.
+ * @errorgap/browser 0.6.0, bundled unminified for the Errorgap WordPress plugin.
  * Source: https://github.com/errorgaphq/errorgap-js (MIT). Includes web-vitals (Apache-2.0).
  * Built with: tsup src/index.ts --format iife --global-name Errorgap --target es2020
  */
@@ -228,10 +228,12 @@ var Errorgap = (() => {
     captureSnapshot: () => captureSnapshot,
     flush: () => flush,
     init: () => init,
-    notify: () => notify
+    notify: () => notify,
+    setUser: () => setUser
   });
 
   // src/configuration.ts
+  var REMOTE_SETTINGS_DEFAULT = globalThis.process?.env?.ERRORGAP_REMOTE_SETTINGS !== "false";
   var DEFAULT_FILTER_KEYS = [
     "password",
     "password_confirmation",
@@ -252,6 +254,13 @@ var Errorgap = (() => {
       this.async = input.async ?? true;
       this.logger = input.logger === void 0 ? safeConsole() : input.logger;
       this.filterKeys = input.filterKeys ?? [...DEFAULT_FILTER_KEYS];
+      this.beforeNotify = input.beforeNotify;
+      this.remoteSettings = input.remoteSettings ?? REMOTE_SETTINGS_DEFAULT;
+      this.ignoreNoise = input.ignoreNoise ?? true;
+      this.dedupeWindowMs = input.dedupeWindowMs ?? 1e3;
+      this.ignoreEnvironments = input.ignoreEnvironments ?? [];
+      this.timeout = input.timeout ?? 5;
+      this.queueSize = input.queueSize ?? 30;
       this.sampleRate = clampRate(input.sampleRate);
       this.sourceMaps = input.sourceMaps ?? true;
       this.ignoreOrigins = input.ignoreOrigins ?? [];
@@ -323,6 +332,77 @@ var Errorgap = (() => {
     state.installed = false;
   }
 
+  // src/version.ts
+  var VERSION = "0.6.0";
+
+  // src/remote-settings.ts
+  var FIELDS = {
+    errors: "errors_enabled",
+    apm: "apm_enabled",
+    logs: "logs_enabled"
+  };
+  var DEFAULT_INTERVAL_S = 600;
+  var MIN_INTERVAL_S = 60;
+  var RemoteSettings = class {
+    constructor(configuration) {
+      this.configuration = configuration;
+      this.settings = {};
+      this.intervalSeconds = DEFAULT_INTERVAL_S;
+      this.started = false;
+    }
+    /** False only when errorgap has said to stop sending this kind of data. */
+    enabled(kind) {
+      if (!this.configuration().remoteSettings) return true;
+      this.start();
+      return this.settings[FIELDS[kind]] !== false;
+    }
+    /** Fetch now. Resolves with whether the settings could be read. */
+    async refresh() {
+      const configuration = this.configuration();
+      if (!configuration.projectSlug || !configuration.endpoint) return false;
+      const base = configuration.endpoint.endsWith("/") ? configuration.endpoint.slice(0, -1) : configuration.endpoint;
+      const headers = { "user-agent": `errorgap-browser/${VERSION}` };
+      if (configuration.apiKey) headers["x-errorgap-project-key"] = configuration.apiKey;
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : void 0;
+      const seconds = configuration.timeout > 0 ? configuration.timeout : 5;
+      const timeout = controller ? setTimeout(() => controller.abort(), seconds * 1e3) : void 0;
+      try {
+        const response = await fetch(`${base}/api/projects/${configuration.projectSlug}/config`, {
+          headers,
+          signal: controller?.signal
+        });
+        if (response.status !== 200) return false;
+        const body = await response.json();
+        if (!body || typeof body !== "object") return false;
+        this.settings = body;
+        const interval = Number(body.poll_interval_seconds);
+        this.intervalSeconds = Number.isFinite(interval) && interval >= MIN_INTERVAL_S ? interval : DEFAULT_INTERVAL_S;
+        return true;
+      } catch {
+        return false;
+      } finally {
+        if (timeout !== void 0) clearTimeout(timeout);
+      }
+    }
+    /** Stop polling (tests, or a reconfigured client). */
+    stop() {
+      if (this.timer !== void 0) clearTimeout(this.timer);
+      this.timer = void 0;
+      this.started = false;
+    }
+    start() {
+      if (this.started) return;
+      this.started = true;
+      const poll = () => {
+        void this.refresh().finally(() => {
+          if (!this.started) return;
+          this.timer = setTimeout(poll, this.intervalSeconds * 1e3);
+        });
+      };
+      poll();
+    }
+  };
+
   // src/backtrace.ts
   var V8_AT = /^\s*at\s+(?:(.*?)\s+\()?(.+?)(?::(\d+))?(?::(\d+))?\)?$/;
   var SAFARI_AT = /^(?:(.*?)@)?(.+?)(?::(\d+))?(?::(\d+))?$/;
@@ -388,58 +468,124 @@ var Errorgap = (() => {
 
   // src/filter.ts
   var FILTERED = "[FILTERED]";
+  var TRUNCATED = "[TRUNCATED]";
+  var CIRCULAR = "[CIRCULAR]";
+  var MAX_STRING = 4096;
+  var MAX_ITEMS = 128;
+  var MAX_DEPTH = 8;
   function filterParams(params, filterKeys) {
-    const lowered = filterKeys.map((k2) => k2.toLowerCase());
-    return walk(params, lowered);
+    return sanitizeRecord(params, filterKeys);
   }
-  function walk(value, loweredKeys) {
-    const out = {};
-    for (const [key, val] of Object.entries(value)) {
-      if (isSensitive(key, loweredKeys)) {
-        out[key] = FILTERED;
-      } else if (val && typeof val === "object" && !Array.isArray(val)) {
-        out[key] = walk(val, loweredKeys);
-      } else {
-        out[key] = val;
-      }
+  function cleanRecord(value) {
+    return sanitizeRecord(value ?? {}, null);
+  }
+  function truncateString(value, limit = MAX_STRING) {
+    return value.length > limit ? `${value.slice(0, limit)}${TRUNCATED}` : value;
+  }
+  function sanitizeRecord(value, filterKeys) {
+    const keys = filterKeys ? filterKeys.map((key) => typeof key === "string" ? key.toLowerCase() : key) : null;
+    const result = walk(value, keys, 0, /* @__PURE__ */ new Set());
+    return result && typeof result === "object" && !Array.isArray(result) ? result : {};
+  }
+  function walk(value, keys, depth, seen) {
+    if (value === null || value === void 0) return value;
+    switch (typeof value) {
+      case "string":
+        return truncateString(value);
+      case "number":
+        return Number.isFinite(value) ? value : String(value);
+      case "boolean":
+        return value;
+      case "bigint":
+      case "symbol":
+        return String(value);
+      case "function":
+        return "[Function]";
     }
-    return out;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
+    if (value instanceof Error) return truncateString(`${value.name}: ${value.message}`);
+    if (seen.has(value)) return CIRCULAR;
+    if (depth >= MAX_DEPTH) return TRUNCATED;
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return value.slice(0, MAX_ITEMS).map((item) => walk(item, keys, depth + 1, seen));
+      }
+      const out = {};
+      let count = 0;
+      for (const [key, item] of Object.entries(value)) {
+        if (count++ >= MAX_ITEMS) break;
+        out[key] = keys && isSensitive(key, keys) ? FILTERED : walk(item, keys, depth + 1, seen);
+      }
+      return out;
+    } catch {
+      return "[UNPRINTABLE]";
+    } finally {
+      seen.delete(value);
+    }
   }
-  function isSensitive(key, loweredKeys) {
-    const k2 = key.toLowerCase();
-    return loweredKeys.some((needle) => k2.includes(needle));
+  function isSensitive(key, keys) {
+    const lowered = key.toLowerCase();
+    return keys.some(
+      (needle) => typeof needle === "string" ? lowered.includes(needle) : needle.test(key)
+    );
   }
-
-  // src/version.ts
-  var VERSION = "0.5.0";
 
   // src/notice.ts
+  var MAX_CAUSE_DEPTH = 10;
+  var MAX_MESSAGE_LENGTH = 8192;
   function buildNotice(error, configuration, options = {}) {
+    const chain = errorChain(error);
+    const causes = chain.slice(1).map((link) => ({ type: errorType(link), message: message(link) }));
+    const backtrace = [];
+    for (const link of chain) {
+      for (const frame of parseBacktrace(link)) {
+        backtrace.push({ ...frame, index: backtrace.length });
+      }
+    }
     return {
       project_id: configuration.projectId,
       received_at: (/* @__PURE__ */ new Date()).toISOString(),
-      errors: [
-        {
-          type: errorType(error),
-          message: String(error.message ?? ""),
-          backtrace: parseBacktrace(error)
-        }
-      ],
+      errors: [{ type: errorType(error), message: message(error), backtrace }],
       context: {
         notifier: "errorgap-browser",
         notifier_version: VERSION,
         environment: configuration.environment,
         release: configuration.release,
         ...browserContext(),
-        ...options.context ?? {}
+        ...causes.length > 0 ? { causes } : {},
+        ...cleanRecord(options.context)
       },
       environment: {
         ...browserEnvironment(),
-        ...options.environment ?? {}
+        ...cleanRecord(options.environment)
       },
-      session: options.session ?? {},
+      session: filterParams(
+        { ...userSession(options.user), ...options.session ?? {} },
+        configuration.filterKeys
+      ),
       params: filterParams(options.params ?? {}, configuration.filterKeys)
     };
+  }
+  function userSession(user) {
+    const session = {};
+    if (user?.id !== void 0 && user.id !== null && String(user.id) !== "") session.user_id = String(user.id);
+    if (user?.email) session.user_email = String(user.email);
+    return session;
+  }
+  function errorChain(error) {
+    const chain = [];
+    const seen = /* @__PURE__ */ new Set();
+    let current = error;
+    while (current instanceof Error && !seen.has(current) && chain.length < MAX_CAUSE_DEPTH) {
+      seen.add(current);
+      chain.push(current);
+      current = current.cause;
+    }
+    return chain.length > 0 ? chain : [error];
+  }
+  function message(error) {
+    return truncateString(String(error.message ?? ""), MAX_MESSAGE_LENGTH);
   }
   function browserContext() {
     const out = {};
@@ -2183,65 +2329,272 @@ var Errorgap = (() => {
     }
   }
 
+  // src/delivery.ts
+  var RateLimitedError = class extends Error {
+    constructor() {
+      super("rate limited by the server, not sent");
+      this.name = "RateLimitedError";
+    }
+  };
+  var CONCURRENCY = 4;
+  var MAX_ATTEMPTS = 3;
+  var RETRY_DELAY_MS = 3e4;
+  var BACKLOG_SIZE = 100;
+  var DEFAULT_RETRY_AFTER_S = 60;
+  var MAX_RETRY_AFTER_S = 300;
+  var Delivery = class {
+    constructor(settings) {
+      this.settings = settings;
+      this.queue = [];
+      this.inFlight = 0;
+      this.backlog = 0;
+      this.pausedUntil = 0;
+      this.held = false;
+      this.idleWaiters = [];
+    }
+    /** Queue a payload and return at once. */
+    enqueue(resource, payload) {
+      this.push({ resource, payload, attempt: 1 });
+      return { queued: true, status: 202 };
+    }
+    /** Queue a payload and resolve with the server's answer to its first attempt. */
+    send(resource, payload) {
+      return new Promise((resolve) => {
+        this.push({ resource, payload, attempt: 1, done: resolve });
+      });
+    }
+    /** Resolve once nothing is queued or being sent. Retries waiting for their delay are not waited for. */
+    flush() {
+      if (this.queue.length === 0 && this.inFlight === 0) return Promise.resolve();
+      return new Promise((resolve) => this.idleWaiters.push(resolve));
+    }
+    /** Hold queued payloads (the browser is offline) or let them go again. */
+    hold(held) {
+      this.held = held;
+      if (!held) this.pump();
+    }
+    paused() {
+      return Date.now() < this.pausedUntil;
+    }
+    push(item) {
+      const limit = Math.max(1, this.settings().queueSize || 100);
+      if (this.queue.length >= limit) {
+        const dropped = this.queue.shift();
+        dropped?.done?.({ error: new Error("errorgap queue full, payload dropped") });
+        this.settings().warn("[errorgap] queue full, dropped the oldest payload");
+      }
+      this.queue.push(item);
+      this.pump();
+    }
+    pump() {
+      while (!this.held && this.inFlight < CONCURRENCY && this.queue.length > 0) {
+        const item = this.queue.shift();
+        this.inFlight++;
+        void this.post(item.resource, item.payload).then((result) => {
+          this.inFlight--;
+          item.done?.(result);
+          if (retryable(result)) this.retryLater(item);
+          if (this.queue.length === 0 && this.inFlight === 0) {
+            const waiters = this.idleWaiters;
+            this.idleWaiters = [];
+            for (const waiter of waiters) waiter();
+          }
+          this.pump();
+        });
+      }
+    }
+    retryLater(item) {
+      if (item.attempt >= MAX_ATTEMPTS || this.backlog >= BACKLOG_SIZE) return;
+      this.backlog++;
+      const timer = setTimeout(() => {
+        this.backlog--;
+        this.push({ resource: item.resource, payload: item.payload, attempt: item.attempt + 1 });
+      }, RETRY_DELAY_MS * item.attempt);
+      timer.unref?.();
+    }
+    async post(resource, payload) {
+      if (this.paused()) return { error: new RateLimitedError() };
+      const settings = this.settings();
+      const base = settings.endpoint.endsWith("/") ? settings.endpoint.slice(0, -1) : settings.endpoint;
+      const headers = {
+        "content-type": "application/json",
+        "user-agent": settings.userAgent
+      };
+      if (settings.apiKey) headers["x-errorgap-project-key"] = settings.apiKey;
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : void 0;
+      const timeoutMs = (settings.timeout > 0 ? settings.timeout : 5) * 1e3;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : void 0;
+      try {
+        const response = await fetch(`${base}/api/projects/${settings.projectSlug}/${resource}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller?.signal,
+          ...settings.fetchInit ?? {}
+        });
+        if (response.status === 429 || response.status === 503) {
+          this.pauseFor(response.headers?.get?.("retry-after") ?? null);
+        }
+        let body = "";
+        try {
+          body = await response.text();
+        } catch {
+          body = "";
+        }
+        return { status: response.status, body };
+      } catch (exception) {
+        const message2 = exception instanceof Error ? `${exception.name}: ${exception.message}` : String(exception);
+        settings.warn(`[errorgap] ${resource} delivery error: ${message2}`);
+        return { error: exception };
+      } finally {
+        if (timer !== void 0) clearTimeout(timer);
+      }
+    }
+    pauseFor(header) {
+      const parsed = header && /^\d+$/.test(header.trim()) ? Number(header.trim()) : DEFAULT_RETRY_AFTER_S;
+      const seconds = Math.min(Math.max(parsed, 1), MAX_RETRY_AFTER_S);
+      this.pausedUntil = Date.now() + seconds * 1e3;
+      this.settings().warn(`[errorgap] rate limited, pausing delivery for ${seconds}s`);
+    }
+  };
+  function retryable(result) {
+    if (result.error instanceof RateLimitedError) return false;
+    if (result.error) return true;
+    return (result.status ?? 0) >= 500;
+  }
+
+  // src/noise.ts
+  var EXTENSION_URL = /^(chrome|moz|safari|safari-web|ms-browser)-extension:\/\//i;
+  var SCRIPT_ERROR = /^Script error\.?$/i;
+  var RESIZE_OBSERVER = /^ResizeObserver loop (limit exceeded|completed with undelivered notifications)/i;
+  function isNoise(notice) {
+    const error = notice.errors[0];
+    if (!error) return false;
+    if (SCRIPT_ERROR.test(error.message) && error.backtrace.length === 0) return true;
+    if (RESIZE_OBSERVER.test(error.message)) return true;
+    const top = error.backtrace[0];
+    return typeof top?.file === "string" && EXTENSION_URL.test(top.file);
+  }
+  var Deduper = class {
+    constructor() {
+      this.lastSent = /* @__PURE__ */ new Map();
+    }
+    duplicate(notice, windowMs, now = Date.now()) {
+      if (windowMs <= 0) return false;
+      const error = notice.errors[0];
+      if (!error) return false;
+      const top = error.backtrace[0];
+      const key = `${error.type}\\n${error.message}\\n${top?.file ?? ""}:${top?.line ?? ""}`;
+      const last = this.lastSent.get(key);
+      if (last !== void 0 && now - last < windowMs) return true;
+      if (this.lastSent.size >= 100) this.lastSent.clear();
+      this.lastSent.set(key, now);
+      return false;
+    }
+  };
+
   // src/client.ts
   var Client = class {
     constructor(configuration) {
       this.configuration = configuration;
       this.pending = /* @__PURE__ */ new Set();
+      this.deduper = new Deduper();
+      this.user = null;
+      this.onlineListening = false;
+      /** What errorgap wants this app to send (the project's remote settings). */
+      this.remote = new RemoteSettings(() => this.configuration);
+      this.delivery = new Delivery(() => ({
+        endpoint: this.configuration.endpoint,
+        projectSlug: this.configuration.projectSlug,
+        apiKey: this.configuration.apiKey,
+        timeout: this.configuration.timeout,
+        queueSize: this.configuration.queueSize,
+        userAgent: `errorgap-browser/${VERSION}`,
+        warn: (message2) => this.configuration.logger?.warn(message2),
+        // keepalive lets a notice sent during unload finish; credentials are
+        // never needed, the project key authenticates.
+        fetchInit: { keepalive: true, credentials: "omit" }
+      }));
+    }
+    /** Name the signed-in user on every later notice; `null` clears it. */
+    setUser(user) {
+      this.user = user;
     }
     configure(configuration) {
       this.configuration = configuration;
     }
     async notify(error, options = {}) {
+      const operation = this.process(error, options);
+      this.track(operation);
+      if (options.sync || !this.configuration.async) return operation;
+      const early = await Promise.race([operation, Promise.resolve(void 0)]);
+      return early ?? { queued: true, status: 202 };
+    }
+    async process(error, options) {
+      let replayDone = () => void 0;
       try {
         this.configuration.validate();
+        if (this.configuration.ignoreEnvironments.includes(this.configuration.environment)) {
+          return { status: 202, dropped: "environment" };
+        }
+        if (!this.remote.enabled("errors")) return { status: 202, dropped: "remote settings" };
+        this.watchConnection();
         const err = coerceError(error);
-        const replayDone = replayErrorStarted(`${err.name || "Error"}: ${err.message}`);
+        replayDone = replayErrorStarted(`${err.name || "Error"}: ${err.message}`);
         if (!shouldSample(this.configuration.sampleRate)) {
           replayDone();
           return { sampled: true };
         }
-        const notice = buildNotice(err, this.configuration, options);
-        const configuration = this.configuration;
-        const operation = this.prepareAndDeliver(notice, configuration).then((result) => {
-          replayDone(groupIdOf(result));
-          return result;
-        });
-        this.track(operation);
-        if (options.sync || !this.configuration.async) {
-          return await operation;
+        const built = buildNotice(err, this.configuration, { user: this.user, ...options });
+        if (this.configuration.ignoreNoise && isNoise(built)) {
+          replayDone();
+          return { status: 202, dropped: "noise" };
         }
-        return { queued: true, status: 202 };
+        if (this.deduper.duplicate(built, this.configuration.dedupeWindowMs)) {
+          replayDone();
+          return { status: 202, dropped: "duplicate" };
+        }
+        const notice = await this.runHook(built);
+        if (!notice) {
+          replayDone();
+          return { status: 202, dropped: "beforeNotify" };
+        }
+        const result = await this.prepareAndDeliver(notice, this.configuration);
+        replayDone(groupIdOf(result));
+        return result;
       } catch (exception) {
+        replayDone();
         this.log(exception);
         return { error: exception };
       }
     }
-    async deliver(notice, configuration = this.configuration) {
-      const url = noticesUrl(configuration);
-      const headers = {
-        "content-type": "application/json",
-        "user-agent": `errorgap-browser/${VERSION}`
-      };
-      if (configuration.apiKey) {
-        headers["x-errorgap-project-key"] = configuration.apiKey;
-      }
+    async deliver(notice, _configuration = this.configuration) {
+      return this.delivery.send("notices", notice);
+    }
+    /**
+     * A hook that throws is logged and skipped: a bug in a filter must not
+     * lose the error it was filtering.
+     */
+    async runHook(notice) {
+      const hook = this.configuration.beforeNotify;
+      if (!hook) return notice;
       try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(notice),
-          // Browsers strip Origin → server CORS must allow it; SDK assumes endpoint
-          // accepts cross-origin requests with these headers.
-          keepalive: true,
-          credentials: "omit"
-        });
-        const body = await safeBody(response);
-        return { status: response.status, body };
+        const result = await hook(notice);
+        if (result === false || result === null) return null;
+        return result && typeof result === "object" && Array.isArray(result.errors) ? result : notice;
       } catch (exception) {
         this.log(exception);
-        return { error: exception };
+        return notice;
       }
+    }
+    /** While the browser is offline notices wait in the queue; they go out when it is back. */
+    watchConnection() {
+      if (this.onlineListening || typeof window === "undefined") return;
+      if (typeof window.addEventListener !== "function") return;
+      this.onlineListening = true;
+      window.addEventListener("offline", () => this.delivery.hold(true));
+      window.addEventListener("online", () => this.delivery.hold(false));
+      if (typeof navigator !== "undefined" && navigator.onLine === false) this.delivery.hold(true);
     }
     async flush() {
       while (this.pending.size > 0) {
@@ -2264,8 +2617,8 @@ var Errorgap = (() => {
     log(exception) {
       const logger = this.configuration.logger;
       if (!logger) return;
-      const message = exception instanceof Error ? `${exception.name}: ${exception.message}` : String(exception);
-      logger.warn(`[errorgap] ${message}`);
+      const message2 = exception instanceof Error ? `${exception.name}: ${exception.message}` : String(exception);
+      logger.warn(`[errorgap] ${message2}`);
     }
   };
   function groupIdOf(result) {
@@ -2275,17 +2628,6 @@ var Errorgap = (() => {
       return typeof parsed.group_id === "string" ? parsed.group_id : void 0;
     } catch {
       return void 0;
-    }
-  }
-  function noticesUrl(configuration) {
-    const base = configuration.endpoint.endsWith("/") ? configuration.endpoint.slice(0, -1) : configuration.endpoint;
-    return `${base}/api/projects/${configuration.projectSlug}/notices`;
-  }
-  async function safeBody(response) {
-    try {
-      return await response.text();
-    } catch {
-      return "";
     }
   }
   function shouldSample(rate) {
@@ -2367,6 +2709,9 @@ var Errorgap = (() => {
   function notify(error, options = {}) {
     return runtimeState().client.notify(error, options);
   }
+  function setUser(user) {
+    runtimeState().client.setUser(user);
+  }
   function flush() {
     return runtimeState().client.flush();
   }
@@ -2379,6 +2724,7 @@ var Errorgap = (() => {
   var Errorgap = {
     init,
     notify,
+    setUser,
     flush,
     configuration: getConfiguration,
     client: getClient,

@@ -4,7 +4,7 @@ Tags: errors, monitoring, logging
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.7.0
+Stable tag: 0.7.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -113,6 +113,9 @@ Yes. Set the endpoint to the base URL of the compatible Errorgap instance. The s
 1. Errorgap connection, error reporting, sampling, and APM settings in WordPress admin.
 
 == Changelog ==
+
+= 0.7.1 =
+* The bundled browser SDK is now 0.6.0: it no longer reports errors visitors' browser extensions throw or cross-origin "Script error." noise, sends an identical error at most once a second, keeps reports while the visitor is offline, retries failed sends, and follows the project's "What SDKs send" switches in Errorgap.
 
 = 0.7.0 =
 * New `errorgap_before_notify` filter: change a notice before it is sent, or return `false` to drop it (for example to ignore a noisy third-party plugin's warnings).

@@ -4,7 +4,7 @@
  * Plugin Name: Errorgap
  * Plugin URI: https://github.com/errorgaphq/errorgap-wordpress
  * Description: Reports WordPress PHP errors, exceptions, shutdown fatals and, optionally, sign-ins to Errorgap.
- * Version: 0.7.0
+ * Version: 0.7.1
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Errorgap
@@ -20,10 +20,10 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-define('ERRORGAP_WP_VERSION', '0.7.0');
+define('ERRORGAP_WP_VERSION', '0.7.1');
 define('ERRORGAP_WP_OPTION', 'errorgap_wordpress_settings');
 // The @errorgap/browser release bundled at assets/errorgap-browser.js.
-define('ERRORGAP_BROWSER_SDK_VERSION', '0.5.0');
+define('ERRORGAP_BROWSER_SDK_VERSION', '0.6.0');
 
 final class Errorgap_WordPress
 {
