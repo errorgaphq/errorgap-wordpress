@@ -85,6 +85,14 @@ $payload = $captured()[0] ?? null;
 check('warning is reported', $payload !== null && $payload['errors'][0]['type'] === 'E_USER_WARNING');
 check('warning frame is marked in_app', $payload !== null && ($payload['errors'][0]['backtrace'][0]['in_app'] ?? null) === true);
 
+// 2a. A warning silenced with `@` (core's `@fopen()` write test) is not reported.
+$reset();
+@$plugin->handle_error(E_WARNING, 'fopen(/wp-content/temp-write-test-1): Failed to open stream: Permission denied', __FILE__, 23);
+check('a warning silenced with @ is not reported', count($captured()) === 0);
+$reset();
+$plugin->handle_error(E_WARNING, 'not silenced', __FILE__, 24);
+check('the same warning without @ is reported', count($captured()) === 1);
+
 // 2b. The errorgap_before_notify filter can change a notice or drop it.
 $reset();
 $GLOBALS['errorgap_filters']['errorgap_before_notify'] = static function (array $notice) {
